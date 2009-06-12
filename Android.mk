@@ -36,12 +36,12 @@ LOCAL_STATIC_LIBRARIES += libstdc++ libc
 include $(BUILD_EXECUTABLE)
 
 include $(commands_recovery_local_path)/minui/Android.mk
-
-endif   # TARGET_ARCH == arm
-endif	# !TARGET_SIMULATOR
-
 include $(commands_recovery_local_path)/amend/Android.mk
 include $(commands_recovery_local_path)/minzip/Android.mk
 include $(commands_recovery_local_path)/mtdutils/Android.mk
 include $(commands_recovery_local_path)/tools/Android.mk
 commands_recovery_local_path :=
+
+endif   # TARGET_ARCH == arm
+endif	# !TARGET_SIMULATOR
+
