@@ -25,8 +25,10 @@
 #include <string.h>
 #include <sys/reboot.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <termios.h> 
 
 #include "bootloader.h"
 #include "commands.h"
@@ -111,6 +113,8 @@ static const char *TEMPORARY_LOG_FILE = "/tmp/recovery.log";
 static const int MAX_ARG_LENGTH = 4096;
 static const int MAX_ARGS = 100;
 
+static int do_reboot = 1;
+
 // open a file given in root:path format, mounting partitions as necessary
 static FILE*
 fopen_root_path(const char *root_path, const char *mode) {
@@ -130,7 +134,6 @@ fopen_root_path(const char *root_path, const char *mode) {
     if (strchr("wa", mode[0])) dirCreateHierarchy(path, 0777, NULL, 1);
 
     FILE *fp = fopen(path, mode);
-    if (fp == NULL) LOGE("Can't open %s\n", path);
     return fp;
 }
 
@@ -219,7 +222,9 @@ finish_recovery(const char *send_intent)
     // By this point, we're ready to return to the main system...
     if (send_intent != NULL) {
         FILE *fp = fopen_root_path(INTENT_FILE, "w");
-        if (fp != NULL) {
+        if (fp == NULL) {
+            LOGE("Can't open %s\n", INTENT_FILE);
+        } else {
             fputs(send_intent, fp);
             check_and_fclose(fp, INTENT_FILE);
         }
@@ -227,7 +232,9 @@ finish_recovery(const char *send_intent)
 
     // Copy logs to cache so the system can find out what happened.
     FILE *log = fopen_root_path(LOG_FILE, "a");
-    if (log != NULL) {
+    if (log == NULL) {
+        LOGE("Can't open %s\n", LOG_FILE);
+    } else {
         FILE *tmplog = fopen(TEMPORARY_LOG_FILE, "r");
         if (tmplog == NULL) {
             LOGE("Can't open %s\n", TEMPORARY_LOG_FILE);
@@ -302,9 +309,18 @@ prompt_and_wait()
 #define ITEM_REBOOT        0
 #define ITEM_APPLY_SDCARD  1
 #define ITEM_WIPE_DATA     2
-    char* items[] = { "reboot system now [Home+Back]",
-                      "apply sdcard:update.zip [Alt+S]",
-                      "wipe data/factory reset [Alt+W]",
+#define ITEM_NANDROID      3
+#define ITEM_FSCK          4
+#define ITEM_A2SD          5
+#define ITEM_CONSOLE       6
+
+    char* items[] = { "[Home+Back] reboot system now",
+                      "[Alt+S] apply sdcard:update.zip",
+		      "[Alt+W] wipe data/factory reset",
+		      "[Alt+B] nandroid v2.1 backup",
+              "[Alt+F] repair ext filesystems",
+              "[Alt+M] move apps to sdcard",
+		      "[Alt+X] go to console",
                       NULL };
 
     ui_start_menu(headers, items);
@@ -330,6 +346,14 @@ prompt_and_wait()
             chosen_item = ITEM_WIPE_DATA;
         } else if (alt && key == KEY_S) {
             chosen_item = ITEM_APPLY_SDCARD;
+        } else if (alt && key == KEY_B) {
+            chosen_item = ITEM_NANDROID;
+        } else if (alt && key == KEY_F) {
+            chosen_item = ITEM_FSCK;
+        } else if (alt && key == KEY_M) {
+            chosen_item = ITEM_A2SD;
+        } else if (alt && key == KEY_X) {
+            chosen_item = ITEM_CONSOLE;    
         } else if ((key == KEY_DOWN || key == KEY_VOLUMEDOWN) && visible) {
             ++selected;
             selected = ui_menu_select(selected);
@@ -350,10 +374,18 @@ prompt_and_wait()
                     return;
 
                 case ITEM_WIPE_DATA:
-                    ui_print("\n-- Wiping data...\n");
-                    erase_root("DATA:");
-                    erase_root("CACHE:");
-                    ui_print("Data wipe complete.\n");
+                    ui_print("\n-- This will ERASE your data!");
+                    ui_print("\n-- Press HOME to confirm, or");
+                    ui_print("\n-- any other key to abort..");
+                    int confirm = ui_wait_key();
+                    if (confirm == KEY_DREAM_HOME) {
+                        ui_print("\n-- Wiping data...\n");
+                        erase_root("DATA:");
+                        erase_root("CACHE:");
+                        ui_print("Data wipe complete.\n");
+                    } else {
+                        ui_print("\nData wipe aborted.\n");
+                    }
                     if (!ui_text_visible()) return;
                     break;
 
@@ -369,6 +401,92 @@ prompt_and_wait()
                       ui_print("Install from sdcard complete.\n");
                     }
                     break;
+
+                case ITEM_NANDROID:
+                    if (ensure_root_path_mounted("SDCARD:") != 0) {
+                        ui_print("Can't mount sdcard\n");
+                    } else {
+                        ui_print("Performing backup");
+                        pid_t pid = fork();
+                        if (pid == 0) {
+                            char *args[] = {"/sbin/sh", "-c", "/sbin/nandroid-mobile.sh backup", "1>&2", NULL};
+                            execv("/sbin/sh", args);
+                            fprintf(stderr, "E:Can't run nandroid-mobile.sh\n(%s)\n", strerror(errno));
+                            _exit(-1);
+                        }
+
+                        int status;
+
+                        while (waitpid(pid, &status, WNOHANG) == 0) {
+                            ui_print(".");
+                            sleep(1);
+                        }
+                        ui_print("\n");
+
+                        if (!WIFEXITED(status) || (WEXITSTATUS(status) != 0)) {
+                             ui_print("Error running nandroid backup. Backup not performed.\n\n");
+                        } else {
+                             ui_print("Backup complete!\n\n");
+                        }
+                    }
+                    break;
+
+                case ITEM_A2SD:
+                    ui_print("Moving apps and cache to SD card");
+                    pid_t pid = fork();
+                    if (pid == 0) {
+                        char *args[] = {"/sbin/sh", "-c", "/sbin/apps2sd", "1>&2", NULL};
+                        execv("/sbin/sh", args);
+                        fprintf(stderr, "Can't run apps2sd\n(%s)\n", strerror(errno));
+                        _exit(-1);
+                    }
+
+                    int status2;
+
+                    while (waitpid(pid, &status2, WNOHANG) == 0) {
+                        ui_print(".");
+                        sleep(1);
+                    } 
+                    ui_print("\n");
+
+                    if (!WIFEXITED(status2) || (WEXITSTATUS(status2) != 0)) {
+                        ui_print("Error moving apps and cache to SD card.  Have you partitioned?\n\n");
+                    } else {
+                        ui_print("Apps2SD preparation complete!\n\n");
+                    }
+                    break;
+
+                case ITEM_FSCK:
+                    ui_print("Checking filesystems");
+                    pid_t pidf = fork();
+                    if (pidf == 0) {
+                        char *args[] = { "/sbin/sh", "-c", "/sbin/repair_fs", "1>&2", NULL };
+                        execv("/sbin/sh", args);
+                        fprintf(stderr, "Unable to execute e2fsck!\n(%s)\n", strerror(errno));
+                        _exit(-1);
+                    }
+
+                    int fsck_status;
+
+                    while (waitpid(pidf, &fsck_status, WNOHANG) == 0) {
+                        ui_print(".");
+                        sleep(1);
+                    }
+                    ui_print("\n");
+
+                    if (!WIFEXITED(fsck_status) || (WEXITSTATUS(fsck_status) != 0)) {
+                        ui_print("Error checking filesystem!  Run e2fsck manually from console!\n\n");
+                    } else {
+                        ui_print("Filesystem checked and repaired.\n\n");
+                    }
+                    break;
+
+                case ITEM_CONSOLE:
+                    ui_print("\n");
+		    do_reboot = 0;
+                    gr_exit();
+                    break;
+            
             }
 
             // if we didn't return from this function to reboot, show
@@ -403,7 +521,15 @@ main(int argc, char **argv)
     freopen(TEMPORARY_LOG_FILE, "a", stderr); setbuf(stderr, NULL);
     fprintf(stderr, "Starting recovery on %s", ctime(&start));
 
+    tcflow(STDIN_FILENO, TCOOFF);
+    
+    char prop_value[PROPERTY_VALUE_MAX];
+    property_get("ro.modversion", &prop_value, "not set");
+
     ui_init();
+    ui_print("Build: ");
+    ui_print(prop_value);
+    ui_print("\n");
     get_args(&argc, &argv);
 
     int previous_runs = 0;
@@ -464,8 +590,15 @@ main(int argc, char **argv)
 
     // Otherwise, get ready to boot the main system...
     finish_recovery(send_intent);
-    ui_print("Rebooting...\n");
     sync();
-    reboot(RB_AUTOBOOT);
+    if (do_reboot)
+    {
+    	ui_print("Rebooting...\n");
+    	reboot(RB_AUTOBOOT);
+	}
+	
+	tcflush(STDIN_FILENO, TCIOFLUSH);	
+	tcflow(STDIN_FILENO, TCOON);
+	
     return EXIT_SUCCESS;
 }
