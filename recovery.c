@@ -310,16 +310,16 @@ prompt_and_wait()
 #define ITEM_APPLY_SDCARD  1
 #define ITEM_WIPE_DATA     2
 #define ITEM_NANDROID      3
-#define ITEM_FSCK          4
-#define ITEM_A2SD          5
+#define ITEM_RESTORE       4
+#define ITEM_FSCK          5
 #define ITEM_CONSOLE       6
 
     char* items[] = { "[Home+Back] reboot system now",
                       "[Alt+S] apply sdcard:update.zip",
 		      "[Alt+W] wipe data/factory reset",
 		      "[Alt+B] nandroid v2.1 backup",
+              "[Alt+R] restore latest backup",
               "[Alt+F] repair ext filesystems",
-              "[Alt+M] move apps to sdcard",
 		      "[Alt+X] go to console",
                       NULL };
 
@@ -350,8 +350,8 @@ prompt_and_wait()
             chosen_item = ITEM_NANDROID;
         } else if (alt && key == KEY_F) {
             chosen_item = ITEM_FSCK;
-        } else if (alt && key == KEY_M) {
-            chosen_item = ITEM_A2SD;
+        } else if (alt && key == KEY_R) {
+            chosen_item = ITEM_RESTORE;
         } else if (alt && key == KEY_X) {
             chosen_item = ITEM_CONSOLE;    
         } else if ((key == KEY_DOWN || key == KEY_VOLUMEDOWN) && visible) {
@@ -377,8 +377,8 @@ prompt_and_wait()
                     ui_print("\n-- This will ERASE your data!");
                     ui_print("\n-- Press HOME to confirm, or");
                     ui_print("\n-- any other key to abort..");
-                    int confirm = ui_wait_key();
-                    if (confirm == KEY_DREAM_HOME) {
+                    int confirm_wipe = ui_wait_key();
+                    if (confirm_wipe == KEY_DREAM_HOME) {
                         ui_print("\n-- Wiping data...\n");
                         erase_root("DATA:");
                         erase_root("CACHE:");
@@ -390,23 +390,32 @@ prompt_and_wait()
                     break;
 
                 case ITEM_APPLY_SDCARD:
-                    ui_print("\n-- Install from sdcard...\n");
-                    int status = install_package(SDCARD_PACKAGE_FILE);
-                    if (status != INSTALL_SUCCESS) {
-                        ui_set_background(BACKGROUND_ICON_ERROR);
-                        ui_print("Installation aborted.\n");
-                    } else if (!ui_text_visible()) {
-                        return;  // reboot if logs aren't visible
+                    ui_print("\n-- Installing new image!");
+                    ui_print("\n-- Press HOME to confirm, or");
+                    ui_print("\n-- any other key to abort..");
+                    int confirm_apply = ui_wait_key();
+                    if (confirm_apply == KEY_DREAM_HOME) {
+                        ui_print("\n-- Install from sdcard...\n");
+                        int status = install_package(SDCARD_PACKAGE_FILE);
+                        if (status != INSTALL_SUCCESS) {
+                            ui_set_background(BACKGROUND_ICON_ERROR);
+                            ui_print("Installation aborted.\n");
+                        } else if (!ui_text_visible()) {
+                            return;  // reboot if logs aren't visible
+                        } else {
+                            ui_print("Install from sdcard complete.\n");
+                        }
                     } else {
-                      ui_print("Install from sdcard complete.\n");
+                        ui_print("\nInstallation aborted.\n");
                     }
+                    if (!ui_text_visible()) return;
                     break;
 
                 case ITEM_NANDROID:
                     if (ensure_root_path_mounted("SDCARD:") != 0) {
                         ui_print("Can't mount sdcard\n");
                     } else {
-                        ui_print("Performing backup");
+                        ui_print("\nPerforming backup");
                         pid_t pid = fork();
                         if (pid == 0) {
                             char *args[] = {"/sbin/sh", "-c", "/sbin/nandroid-mobile.sh backup", "1>&2", NULL};
@@ -431,29 +440,43 @@ prompt_and_wait()
                     }
                     break;
 
-                case ITEM_A2SD:
-                    ui_print("Moving apps and cache to SD card");
-                    pid_t pid = fork();
-                    if (pid == 0) {
-                        char *args[] = {"/sbin/sh", "-c", "/sbin/apps2sd", "1>&2", NULL};
-                        execv("/sbin/sh", args);
-                        fprintf(stderr, "Can't run apps2sd\n(%s)\n", strerror(errno));
-                        _exit(-1);
-                    }
+                case ITEM_RESTORE:
+                    ui_print("\n-- Restore latest backup");
+                    ui_print("\n-- Press HOME to confirm, or");
+                    ui_print("\n-- any other key to abort.");
+                    int confirm_restore = ui_wait_key();
+                    if (confirm_restore == KEY_DREAM_HOME) {
+                        ui_print("\n");
+                        if (ensure_root_path_mounted("SDCARD:") != 0) {
+                            ui_print("Can't mount sdcard, aborting.\n");
+                        } else {
+                            ui_print("Restoring latest backup");
+                            pid_t pid = fork();
+                            if (pid == 0) {
+                                char *args[] = {"/sbin/sh", "-c", "/sbin/nandroid-mobile.sh restore", "1>&2", NULL};
+                                execv("/sbin/sh", args);
+                                fprintf(stderr, "Can't run nandroid-mobile.sh\n(%s)\n", strerror(errno));
+                                _exit(-1);
+                            }
 
-                    int status2;
+                            int status3;
 
-                    while (waitpid(pid, &status2, WNOHANG) == 0) {
-                        ui_print(".");
-                        sleep(1);
-                    } 
-                    ui_print("\n");
+                            while (waitpid(pid, &status3, WNOHANG) == 0) {
+                                ui_print(".");
+                                sleep(1);
+                            } 
+                            ui_print("\n");
 
-                    if (!WIFEXITED(status2) || (WEXITSTATUS(status2) != 0)) {
-                        ui_print("Error moving apps and cache to SD card.  Have you partitioned?\n\n");
+                            if (!WIFEXITED(status3) || (WEXITSTATUS(status3) != 0)) {
+                                ui_print("Error performing restore!  Try running 'nandroid-mobile.sh backup' from console.\n\n");
+                            } else {
+                                ui_print("Restore complete!\n\n");
+                            }
+                        }
                     } else {
-                        ui_print("Apps2SD preparation complete!\n\n");
+                        ui_print("Restore complete!\n\n");
                     }
+                    if (!ui_text_visible()) return;
                     break;
 
                 case ITEM_FSCK:
@@ -475,7 +498,7 @@ prompt_and_wait()
                     ui_print("\n");
 
                     if (!WIFEXITED(fsck_status) || (WEXITSTATUS(fsck_status) != 0)) {
-                        ui_print("Error checking filesystem!  Run e2fsck manually from console!\n\n");
+                        ui_print("Error checking filesystem!  Run e2fsck manually from console.\n\n");
                     } else {
                         ui_print("Filesystem checked and repaired.\n\n");
                     }
