@@ -404,7 +404,12 @@ choose_update_file()
                 } else if (!ui_text_visible()) {
                     break;  // reboot if logs aren't visible
                 } else {
-                    ui_print("Install from sdcard complete.\n");
+                    if (firmware_update_pending()) {
+                        ui_print("\nReboot via home+back or menu\n"
+                                 "to complete installation.\n");
+                    } else {
+                        ui_print("\nInstall from sdcard complete.\n");
+                    }
                 }
             } else {
                 ui_print("\nInstallation aborted.\n");
