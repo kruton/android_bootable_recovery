@@ -425,7 +425,7 @@ out:
 static void
 prompt_and_wait()
 {
-    char* headers[] = { "Android system recovery <"
+    static char* headers[] = { "Android system recovery <"
                           EXPAND(RECOVERY_API_VERSION) ">",
                         "",
                         "Use trackball to highlight;",
