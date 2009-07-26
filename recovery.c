@@ -21,6 +21,7 @@
 #include <limits.h>
 #include <linux/input.h>
 #include <stdio.h>
+#include <dirent.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/reboot.h>
@@ -51,6 +52,8 @@ static const char *COMMAND_FILE = "CACHE:recovery/command";
 static const char *INTENT_FILE = "CACHE:recovery/intent";
 static const char *LOG_FILE = "CACHE:recovery/log";
 static const char *SDCARD_PACKAGE_FILE = "SDCARD:update.zip";
+static const char *SDCARD_PATH = "SDCARD:";
+#define SDCARD_PATH_LENGTH 7
 static const char *TEMPORARY_LOG_FILE = "/tmp/recovery.log";
 
 /*
@@ -292,6 +295,134 @@ erase_root(const char *root)
 }
 
 static void
+choose_update_file()
+{
+    static char* headers[] = { "Choose update ZIP file",
+                               "",
+                               "Use trackball to highlight;",
+                               "click to select.",
+                               "",
+                               NULL };
+
+    char path[PATH_MAX] = "";
+    DIR *dir;
+    struct dirent *de;
+    char **files;
+    int total = 0;
+    int i;
+
+    if (ensure_root_path_mounted(SDCARD_PATH) != 0) {
+        LOGE("Can't mount %s\n", SDCARD_PATH);
+        return;
+    }
+
+    if (translate_root_path(SDCARD_PATH, path, sizeof(path)) == NULL) {
+        LOGE("Bad path %s", path);
+        return;
+    }
+
+    dir = opendir(path);
+    if (dir == NULL) {
+        LOGE("Couldn't open directory %s", path);
+        return;
+    }
+
+    /* count how many files we're looking at */
+    while ((de = readdir(dir)) != NULL) {
+        char *extension = strrchr(de->d_name, '.');
+        if (extension == NULL) {
+            continue;
+        } else if (!strcasecmp(extension, ".zip")) {
+            total++;
+        }
+    }
+
+    /* allocate the array for the file list menu */
+    files = (char **) malloc((total + 1) * sizeof(*files));
+    files[total] = NULL;
+
+    /* set it up for the second pass */
+    rewinddir(dir);
+
+    /* put the names in the array for the menu */
+    i = 0;
+    while ((de = readdir(dir)) != NULL) {
+        char *extension = strrchr(de->d_name, '.');
+        if (extension == NULL) {
+            continue;
+        } else if (!strcasecmp(extension, ".zip")) {
+            files[i] = (char *) malloc(SDCARD_PATH_LENGTH + strlen(de->d_name) + 1);
+            strcpy(files[i], SDCARD_PATH);
+            strcat(files[i], de->d_name);
+            i++;
+        }
+    }
+
+    /* close directory handle */
+    if (closedir(dir) < 0) {
+        LOGE("Failure closing directory %s", path);
+        goto out;
+    }
+
+    ui_start_menu(headers, files);
+    int selected = 0;
+    int chosen_item = -1;
+
+    finish_recovery(NULL);
+    ui_reset_progress();
+    for (;;) {
+        int key = ui_wait_key();
+        int visible = ui_text_visible();
+
+        if (key == KEY_DREAM_BACK) {
+            break;
+        } else if ((key == KEY_DOWN || key == KEY_VOLUMEDOWN) && visible) {
+            ++selected;
+            selected = ui_menu_select(selected);
+        } else if ((key == KEY_UP || key == KEY_VOLUMEUP) && visible) {
+            --selected;
+            selected = ui_menu_select(selected);
+        } else if (key == BTN_MOUSE && visible) {
+            chosen_item = selected;
+        }
+
+        if (chosen_item >= 0) {
+            // turn off the menu, letting ui_print() to scroll output
+            // on the screen.
+            ui_end_menu();
+
+            ui_print("\n-- Installing new image!");
+            ui_print("\n-- Press HOME to confirm, or");
+            ui_print("\n-- any other key to abort..");
+            int confirm_apply = ui_wait_key();
+            if (confirm_apply == KEY_DREAM_HOME) {
+                ui_print("\n-- Install from sdcard...\n");
+                int status = install_package(files[chosen_item]);
+                if (status != INSTALL_SUCCESS) {
+                    ui_set_background(BACKGROUND_ICON_ERROR);
+                    ui_print("Installation aborted.\n");
+                } else if (!ui_text_visible()) {
+                    break;  // reboot if logs aren't visible
+                } else {
+                    ui_print("Install from sdcard complete.\n");
+                }
+            } else {
+                ui_print("\nInstallation aborted.\n");
+            }
+            if (!ui_text_visible()) break;
+            break;
+        }
+    }
+
+out:
+
+    for (i = 0; i < total; i++) {
+        free(files[i]);
+    }
+    free(files);
+}
+
+static void
 prompt_and_wait()
 {
     char* headers[] = { "Android system recovery <"
@@ -302,23 +433,25 @@ prompt_and_wait()
                         "",
                         NULL };
 
-    // these constants correspond to elements of the items[] list.
+// these constants correspond to elements of the items[] list.
 #define ITEM_REBOOT        0
 #define ITEM_APPLY_SDCARD  1
-#define ITEM_WIPE_DATA     2
-#define ITEM_NANDROID      3
-#define ITEM_RESTORE       4
-#define ITEM_FSCK          5
-#define ITEM_CONSOLE       6
+#define ITEM_APPLY_UPDATE  2
+#define ITEM_WIPE_DATA     3
+#define ITEM_NANDROID      4
+#define ITEM_RESTORE       5
+#define ITEM_FSCK          6
+#define ITEM_CONSOLE       7
 
-    char* items[] = { "[Home+Back] reboot system now",
-                      "[Alt+S] apply sdcard:update.zip",
-		      "[Alt+W] wipe data/factory reset",
-		      "[Alt+B] nandroid v2.1 backup",
-              "[Alt+R] restore latest backup",
-              "[Alt+F] repair ext filesystems",
-		      "[Alt+X] go to console",
-                      NULL };
+    static char* items[] = { "[Home+Back] reboot system now",
+                             "[Alt+S] apply sdcard:update.zip",
+                             "[Alt+A] apply any zip from sd",
+                             "[Alt+W] wipe data/factory reset",
+                             "[Alt+B] nandroid v2.1 backup",
+                             "[Alt+R] restore latest backup",
+                             "[Alt+F] repair ext filesystems",
+                             "[Alt+X] go to console",
+                             NULL };
 
     ui_start_menu(headers, items);
     int selected = 0;
@@ -343,6 +476,8 @@ prompt_and_wait()
             chosen_item = ITEM_WIPE_DATA;
         } else if (alt && key == KEY_S) {
             chosen_item = ITEM_APPLY_SDCARD;
+        } else if (alt && key == KEY_A) {
+            chosen_item = ITEM_APPLY_UPDATE;
         } else if (alt && key == KEY_B) {
             chosen_item = ITEM_NANDROID;
         } else if (alt && key == KEY_F) {
@@ -412,6 +547,10 @@ prompt_and_wait()
                         ui_print("\nInstallation aborted.\n");
                     }
                     if (!ui_text_visible()) return;
+                    break;
+
+                case ITEM_APPLY_UPDATE:
+                    choose_update_file();
                     break;
 
                 case ITEM_NANDROID:
