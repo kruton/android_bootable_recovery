@@ -330,7 +330,7 @@ choose_update_file()
     /* count how many files we're looking at */
     while ((de = readdir(dir)) != NULL) {
         char *extension = strrchr(de->d_name, '.');
-        if (extension == NULL) {
+        if (extension == NULL || de->d_name[0] == '.') {
             continue;
         } else if (!strcasecmp(extension, ".zip")) {
             total++;
@@ -348,7 +348,7 @@ choose_update_file()
     i = 0;
     while ((de = readdir(dir)) != NULL) {
         char *extension = strrchr(de->d_name, '.');
-        if (extension == NULL) {
+        if (extension == NULL || de->d_name[0] == '.') {
             continue;
         } else if (!strcasecmp(extension, ".zip")) {
             files[i] = (char *) malloc(SDCARD_PATH_LENGTH + strlen(de->d_name) + 1);
